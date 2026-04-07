@@ -14,6 +14,7 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapi
 def init_connection():
     try:
         secret_data = st.secrets["gcp_service_account"]
+        # 將字串格式的金鑰轉換為字典
         if isinstance(secret_data, str):
             secret_data = json.loads(secret_data)
             
@@ -74,6 +75,7 @@ if uploaded_file and db_connected:
                 df = pd.read_csv(uploaded_file)
                 all_dfs.append(("", df))
             else:
+                # 讀取所有 Sheet，排除摘要總表
                 sheet_dict = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
                 for sheet_name, df in sheet_dict.items():
                     if "摘要" not in sheet_name and len(df.columns) >= 9:
@@ -89,6 +91,7 @@ if uploaded_file and db_connected:
                     temp_df["Root Cause"] = df.iloc[:, 7]
                     temp_df["Corrective Action"] = df.iloc[:, 8]
                     
+                    # 判斷是 RR 還是 FR
                     col_c_name = str(df.columns[2]).lower()
                     col_f_name = str(df.columns[5]).lower()
                     first_val_c = str(df.iloc[0, 2]).lower() if len(df) > 0 else ""
@@ -110,6 +113,7 @@ if uploaded_file and db_connected:
                 new_df = new_df.dropna(subset=["Item 名稱"])
                 new_df = new_df[~new_df["Item 名稱"].astype(str).str.contains("item", case=False, na=False)]
 
+                # 百分比格式化
                 def format_rate(val):
                     if pd.isna(val): return val
                     if isinstance(val, str) and '%' in val: return val
@@ -119,21 +123,28 @@ if uploaded_file and db_connected:
                 new_df["Rate (比例)"] = new_df["Rate (比例)"].apply(format_rate)
                 new_df = new_df[["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"]]
 
+                # --- 最關鍵的修正區域 ---
                 if not db_df.empty:
-                    db_df.set_index(["Station", "Data Type", "Item 名稱"], inplace=True)
-                    new_df.set_index(["Station", "Data Type", "Item 名稱"], inplace=True)
-                    db_df.update(new_df)
-                    db_df = db_df.combine_first(new_df)
-                    db_df.reset_index(inplace=True)
+                    # 使用標準的賦值寫法，取代 inplace=True 避免報錯
+                    db_df = db_df.set_index(["Station", "Data Type", "Item 名稱"])
+                    new_df = new_df.set_index(["Station", "Data Type", "Item 名稱"])
+                    
+                    db_df.update(new_df)  # 更新現有資料
+                    db_df = db_df.combine_first(new_df)  # 加入全新的資料
+                    
+                    db_df = db_df.reset_index() # 恢復原本的表格結構
                 else:
                     db_df = new_df
 
+                # 確保 Root Cause 大小寫一致
                 if 'Root cause' in db_df.columns:
                     db_df.rename(columns={'Root cause': 'Root Cause'}, inplace=True)
 
+                # 準備上傳到 Google Sheets 的資料
                 upload_df = db_df.copy()
                 upload_df = upload_df.fillna("N/A").astype(str)
                 
+                # 清空並寫入
                 sheet.clear()
                 sheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist())
                 
@@ -156,6 +167,7 @@ else:
     search_query = st.text_input("請輸入想尋找的 Retest item 或 Fail item (例如: UnbindStateSync_3)")
     
     if search_query:
+        # 模糊搜尋不分大小寫
         mask = db_df["Item 名稱"].astype(str).str.contains(search_query, case=False, na=False)
         result_df = db_df[mask]
         
