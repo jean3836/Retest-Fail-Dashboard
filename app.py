@@ -22,7 +22,7 @@ def init_connection():
         client = gspread.authorize(creds)
         return client
     except Exception as e:
-        st.sidebar.error(f"連線設定失敗：{e}")
+        st.sidebar.error(f"連線設定失敗，請檢查金鑰格式：{e}")
         return None
 
 client = init_connection()
@@ -111,7 +111,13 @@ if uploaded_file and db_connected:
                 new_df = pd.concat(processed_data, ignore_index=True)
                 new_df["Station"] = new_df["Station"].ffill()
                 new_df = new_df.dropna(subset=["Item 名稱"])
-                new_df = new_df[~new_df["Item 名稱"].astype(str).str.contains("item", case=False, na=False)]
+                
+                # --- 自動清洗機：去除換行與前後空白 ---
+                new_df["Station"] = new_df["Station"].astype(str).str.strip()
+                new_df["Item 名稱"] = new_df["Item 名稱"].astype(str).str.strip()
+                
+                # 去除把「標題」當成資料讀進來的無效行
+                new_df = new_df[~new_df["Item 名稱"].str.contains("item", case=False, na=False)]
 
                 # 百分比格式化
                 def format_rate(val):
@@ -123,22 +129,34 @@ if uploaded_file and db_connected:
                 new_df["Rate (比例)"] = new_df["Rate (比例)"].apply(format_rate)
                 new_df = new_df[["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"]]
 
-                # --- 最關鍵的修正區域 ---
-                if not db_df.empty:
-                    # 使用標準的賦值寫法，取代 inplace=True 避免報錯
+                # --- 處理 Excel 內部的重複項，保留最後一筆 ---
+                new_df = new_df.drop_duplicates(subset=["Station", "Data Type", "Item 名稱"], keep='last')
+
+                # --- 安全護城河與覆蓋邏輯 ---
+                required_cols = ["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"]
+                
+                # 確保 db_df 存在且擁有比對所需的關鍵欄位
+                if not db_df.empty and all(col in db_df.columns for col in ["Station", "Data Type", "Item 名稱"]):
+                    # 清洗雲端舊資料的空白與重複項
+                    db_df["Station"] = db_df["Station"].astype(str).str.strip()
+                    db_df["Item 名稱"] = db_df["Item 名稱"].astype(str).str.strip()
+                    db_df = db_df.drop_duplicates(subset=["Station", "Data Type", "Item 名稱"], keep='last')
+                    
+                    # 設置唯一索引進行精準覆蓋
                     db_df = db_df.set_index(["Station", "Data Type", "Item 名稱"])
                     new_df = new_df.set_index(["Station", "Data Type", "Item 名稱"])
                     
                     db_df.update(new_df)  # 更新現有資料
-                    db_df = db_df.combine_first(new_df)  # 加入全新的資料
-                    
-                    db_df = db_df.reset_index() # 恢復原本的表格結構
+                    db_df = db_df.combine_first(new_df)  # 補上全新的資料
+                    db_df = db_df.reset_index() # 恢復表格結構
                 else:
+                    # 如果雲端資料庫損壞或全空，直接用新資料建檔
                     db_df = new_df
 
-                # 確保 Root Cause 大小寫一致
+                # 確保 Root Cause 欄位大小寫標準化，並只提取我們需要的 6 個欄位
                 if 'Root cause' in db_df.columns:
                     db_df.rename(columns={'Root cause': 'Root Cause'}, inplace=True)
+                db_df = db_df[required_cols]
 
                 # 準備上傳到 Google Sheets 的資料
                 upload_df = db_df.copy()
@@ -149,9 +167,7 @@ if uploaded_file and db_connected:
                 sheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist())
                 
                 st.sidebar.success("✅ 雲端資料庫更新成功！")
-                
-                # 強制網頁重新載入最新資料
-                st.rerun()
+                st.rerun() # 強制網頁重新載入最新資料
                 
         except Exception as e:
             st.sidebar.error(f"資料處理或上傳失敗：{e}")
