@@ -1,28 +1,31 @@
 import streamlit as st
 import pandas as pd
 import gspread
+import json
 from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="產線數據查找工具", layout="wide")
 st.title("🔍 產線 Retest & Fail 數據庫系統")
 
 # --- 設定 Google Sheets 連線 ---
-# 這是讀取 Streamlit 雲端秘密金鑰的設定
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 @st.cache_resource
 def init_connection():
     try:
-        # 從 Streamlit Secrets 讀取您設定的 JSON 金鑰
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+        secret_data = st.secrets["gcp_service_account"]
+        if isinstance(secret_data, str):
+            secret_data = json.loads(secret_data)
+            
+        creds = Credentials.from_service_account_info(secret_data, scopes=SCOPES)
         client = gspread.authorize(creds)
         return client
     except Exception as e:
+        st.sidebar.error(f"連線設定失敗：{e}")
         return None
 
 client = init_connection()
 
-# 嘗試開啟您的試算表
 SHEET_NAME = "Retest_Fail_Database"
 try:
     if client:
@@ -37,10 +40,12 @@ except Exception as e:
 # --- 讀取雲端資料庫 ---
 def load_database():
     if db_connected:
-        records = sheet.get_all_records()
-        if records:
-            return pd.DataFrame(records)
-    # 如果資料庫是空的或沒連線，回傳空表
+        try:
+            records = sheet.get_all_records()
+            if records:
+                return pd.DataFrame(records)
+        except:
+            pass
     return pd.DataFrame(columns=["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"])
 
 db_df = load_database()
@@ -114,36 +119,28 @@ if uploaded_file and db_connected:
                 new_df["Rate (比例)"] = new_df["Rate (比例)"].apply(format_rate)
                 new_df = new_df[["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"]]
 
-                # --- 覆蓋與更新邏輯 ---
-                # 將「Station」、「Data Type」與「Item 名稱」視為唯一鍵值，進行比對與覆蓋
                 if not db_df.empty:
-                    # 設定索引以進行更新
                     db_df.set_index(["Station", "Data Type", "Item 名稱"], inplace=True)
                     new_df.set_index(["Station", "Data Type", "Item 名稱"], inplace=True)
-                    
-                    # 更新舊有資料，並加入新資料
                     db_df.update(new_df)
                     db_df = db_df.combine_first(new_df)
-                    
-                    # 恢復索引
                     db_df.reset_index(inplace=True)
                 else:
                     db_df = new_df
 
-                # 確保 Root Cause 欄位名稱正確
                 if 'Root cause' in db_df.columns:
                     db_df.rename(columns={'Root cause': 'Root Cause'}, inplace=True)
 
-                # 把整理好的資料寫回 Google Sheets
-                # 為了避免格式錯誤，將所有資料轉為字串並處理 NaN
                 upload_df = db_df.copy()
-                upload_df = upload_df.fillna("N/A")
-                upload_df = upload_df.astype(str)
+                upload_df = upload_df.fillna("N/A").astype(str)
                 
-                sheet.clear() # 清空原本的試算表
-                sheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist()) # 寫入新資料
+                sheet.clear()
+                sheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist())
                 
                 st.sidebar.success("✅ 雲端資料庫更新成功！")
+                
+                # 強制網頁重新載入最新資料
+                st.rerun()
                 
         except Exception as e:
             st.sidebar.error(f"資料處理或上傳失敗：{e}")
