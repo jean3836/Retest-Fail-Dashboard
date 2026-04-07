@@ -1,31 +1,10 @@
-if processed_data:
-                new_df = pd.concat(processed_data, ignore_index=True)
-                new_df["Station"] = new_df["Station"].ffill()
-                new_df = new_df.dropna(subset=["Item 名稱"])
+# --- 覆蓋與更新邏輯 ---
+                # 安全護城河：確保雲端資料庫 (db_df) 擁有所有正確的欄位
+                required_cols = ["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"]
                 
-                # --- 新增：自動清洗機（去除換行與前後空白） ---
-                new_df["Station"] = new_df["Station"].astype(str).str.strip()
-                new_df["Item 名稱"] = new_df["Item 名稱"].astype(str).str.strip()
-                
-                # 去除把「標題」當成資料讀進來的行
-                new_df = new_df[~new_df["Item 名稱"].str.contains("item", case=False, na=False)]
-
-                # 百分比格式化
-                def format_rate(val):
-                    if pd.isna(val): return val
-                    if isinstance(val, str) and '%' in val: return val
-                    try: return f"{float(val) * 100:.4f}%"
-                    except: return str(val)
-
-                new_df["Rate (比例)"] = new_df["Rate (比例)"].apply(format_rate)
-                new_df = new_df[["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"]]
-
-                # --- 新增：處理 Excel 內部的重複項，保留最後一筆有資料的 ---
-                new_df = new_df.drop_duplicates(subset=["Station", "Data Type", "Item 名稱"], keep='last')
-
-                # --- 覆蓋與更新邏輯 ---
-                if not db_df.empty:
-                    # 先清洗雲端資料庫的舊資料空白，並去除可能存在的重複項
+                # 檢查 db_df 是否真的有這些欄位，如果沒有，就當作它是空的重新來過
+                if not db_df.empty and all(col in db_df.columns for col in ["Station", "Data Type", "Item 名稱"]):
+                    # 洗雲端資料庫的舊資料空白，並去除可能存在的重複項
                     db_df["Station"] = db_df["Station"].astype(str).str.strip()
                     db_df["Item 名稱"] = db_df["Item 名稱"].astype(str).str.strip()
                     db_df = db_df.drop_duplicates(subset=["Station", "Data Type", "Item 名稱"], keep='last')
@@ -39,11 +18,15 @@ if processed_data:
                     db_df = db_df.combine_first(new_df)
                     db_df = db_df.reset_index()
                 else:
+                    # 如果雲端資料庫格式損壞或是全空的，直接以新資料為主
                     db_df = new_df
 
-                # 確保 Root Cause 大小寫一致
+                # 確保 Root Cause 大小寫一致，並只保留我們需要的欄位
                 if 'Root cause' in db_df.columns:
                     db_df.rename(columns={'Root cause': 'Root Cause'}, inplace=True)
+                
+                # 強制過濾只剩下這 6 個欄位，確保寫回 Google Sheets 時格式完美
+                db_df = db_df[required_cols]
 
                 # 準備上傳到 Google Sheets 的資料
                 upload_df = db_df.copy()
@@ -55,6 +38,3 @@ if processed_data:
                 
                 st.sidebar.success("✅ 雲端資料庫更新成功！")
                 st.rerun()
-                
-        except Exception as e:
-            st.sidebar.error(f"資料處理或上傳失敗：{e}")
