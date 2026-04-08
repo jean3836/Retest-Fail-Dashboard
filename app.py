@@ -64,7 +64,10 @@ st.sidebar.download_button(label="下載標準模板 (CSV)", data=get_template()
 
 # --- 2. 檔案上傳與更新資料庫 ---
 st.sidebar.header("📤 第二步：上傳最新數據")
-uploaded_file = st.sidebar.file_uploader("上傳報表 (系統會自動更新與覆蓋舊資料)", type=["csv", "xlsx"])
+uploaded_file = st.sidebar.file_uploader("上傳報表", type=["csv", "xlsx"])
+
+# 🌟 關鍵升級 1：新增強制覆蓋模式，徹底解決幽靈舊資料累積問題
+overwrite_mode = st.sidebar.checkbox("⚠️ 完整覆蓋模式 (推薦)", value=True, help="勾選此項將會清除雲端所有舊資料，完全以本次上傳的檔案為準。可解決歷史錯誤資料殘留、重複出現的問題。")
 
 if uploaded_file and db_connected:
     if st.sidebar.button("🚀 確認上傳並更新雲端"):
@@ -83,27 +86,21 @@ if uploaded_file and db_connected:
                 processed_data = []
                 for sheet_name, df in all_dfs:
                     if len(df.columns) >= 9:
-                        # ==========================================
-                        # 🌟 核心修正區：嚴格只判斷表頭 (Column 2)
-                        # ==========================================
+                        # 嚴格依照表頭判定 Data Type
                         col_c_name = str(df.columns[2]).strip().lower()
-                        
-                        # 嚴格依照表頭判定，完全不看 Item 內容
                         if "retest" in col_c_name:
                             data_type = "⚠️ Retest (RR)"
                         elif "fail" in col_c_name or "failure" in col_c_name:
                             data_type = "🛑 Fail (FR)"
                         else:
-                            # 為了保險起見，如果 C 欄沒抓到，掃描整列的表頭
+                            # 雙重保險：掃描整列的表頭
                             all_cols_str = " ".join([str(c).lower() for c in df.columns])
                             if "retest" in all_cols_str:
                                 data_type = "⚠️ Retest (RR)"
                             elif "fail" in all_cols_str or "failure" in all_cols_str:
                                 data_type = "🛑 Fail (FR)"
                             else:
-                                # 如果表頭完全沒有這兩個關鍵字，代表這不是標準報表，跳過處理
                                 continue
-                        # ==========================================
 
                         temp_df = pd.DataFrame()
                         temp_df["Station"] = df.iloc[:, 0]
@@ -120,17 +117,21 @@ if uploaded_file and db_connected:
                     new_df["Station"] = new_df["Station"].ffill()
                     new_df = new_df.dropna(subset=["Item 名稱"])
                     
-                    new_df["Station"] = new_df["Station"].astype(str).str.strip()
-                    new_df["Item 名稱"] = new_df["Item 名稱"].astype(str).str.strip()
+                    # 🌟 關鍵升級 2：徹底清除儲存格內的「換行符號 \n」與多餘空白
+                    # 解決 Excel 中因為 Alt+Enter 導致文字被截斷或出現 "B498\nUser FWDL" 的斷頭問題
+                    for col in ["Station", "Item 名稱", "Root Cause", "Corrective Action"]:
+                        new_df[col] = new_df[col].astype(str).str.replace(r'\r+|\n+', ' ', regex=True).str.strip()
                     
-                    # 預處理 Root Cause，將空值填上 N/A，方便後續當作判斷依據
-                    new_df["Root Cause"] = new_df["Root Cause"].fillna("N/A").astype(str).str.strip()
+                    # 預先處理空值，避免後續 index 比對報錯
+                    new_df["Root Cause"] = new_df["Root Cause"].replace('nan', 'N/A').fillna("N/A")
+                    new_df["Corrective Action"] = new_df["Corrective Action"].replace('nan', 'N/A').fillna("N/A")
                     
                     # 排除表頭不小心被當成數據讀進來的狀況
                     new_df = new_df[~new_df["Item 名稱"].str.contains("item", case=False, na=False)]
+                    new_df = new_df[new_df["Item 名稱"] != "nan"]
 
                     def format_rate(val):
-                        if pd.isna(val) or str(val).strip() == "": return ""
+                        if pd.isna(val) or str(val).strip() in ["", "nan"]: return ""
                         if isinstance(val, str) and '%' in val: return val
                         try: return f"{float(val) * 100:.4f}%"
                         except: return str(val)
@@ -138,7 +139,7 @@ if uploaded_file and db_connected:
                     new_df["Rate (比例)"] = new_df["Rate (比例)"].apply(format_rate)
                     new_df = new_df[["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"]]
 
-                    # 🌟 關鍵升級：把 Root Cause 加進來當作獨立資料的判斷依據
+                    # 去除本次檔案內部的重複值
                     new_df = new_df.drop_duplicates(subset=["Station", "Data Type", "Item 名稱", "Root Cause"], keep='last')
 
                     required_cols = ["Station", "Data Type", "Item 名稱", "Rate (比例)", "Root Cause", "Corrective Action"]
@@ -146,32 +147,39 @@ if uploaded_file and db_connected:
                     if 'Root cause' in db_df.columns:
                         db_df.rename(columns={'Root cause': 'Root Cause'}, inplace=True)
 
-                    if not db_df.empty and all(col in db_df.columns for col in ["Station", "Data Type", "Item 名稱", "Root Cause"]):
-                        db_df["Station"] = db_df["Station"].astype(str).str.strip()
-                        db_df["Item 名稱"] = db_df["Item 名稱"].astype(str).str.strip()
-                        db_df["Root Cause"] = db_df["Root Cause"].fillna("N/A").astype(str).str.strip()
-                        
-                        db_df = db_df.drop_duplicates(subset=["Station", "Data Type", "Item 名稱", "Root Cause"], keep='last')
-                        
-                        # 🌟 雲端資料庫更新時，也根據這 4 個條件進行精準配對
-                        db_df = db_df.set_index(["Station", "Data Type", "Item 名稱", "Root Cause"])
-                        new_df = new_df.set_index(["Station", "Data Type", "Item 名稱", "Root Cause"])
-                        
-                        db_df.update(new_df) 
-                        db_df = db_df.combine_first(new_df) 
-                        db_df = db_df.reset_index()
-                    else:
+                    # 🌟 依據使用者選擇，決定要「完全覆蓋」還是「舊有合併」
+                    if overwrite_mode or db_df.empty:
+                        # 覆蓋模式：直接把新資料當作唯一資料庫，舊的幽靈紀錄全部灰飛煙滅
                         db_df = new_df
+                    else:
+                        # 傳統合併模式
+                        if all(col in db_df.columns for col in ["Station", "Data Type", "Item 名稱", "Root Cause"]):
+                            db_df["Station"] = db_df["Station"].astype(str).str.strip()
+                            db_df["Item 名稱"] = db_df["Item 名稱"].astype(str).str.strip()
+                            db_df["Root Cause"] = db_df["Root Cause"].fillna("N/A").astype(str).str.strip()
+                            
+                            db_df = db_df.drop_duplicates(subset=["Station", "Data Type", "Item 名稱", "Root Cause"], keep='last')
+                            
+                            db_df = db_df.set_index(["Station", "Data Type", "Item 名稱", "Root Cause"])
+                            new_df = new_df.set_index(["Station", "Data Type", "Item 名稱", "Root Cause"])
+                            
+                            db_df.update(new_df) 
+                            db_df = db_df.combine_first(new_df) 
+                            db_df = db_df.reset_index()
+                        else:
+                            db_df = new_df
 
                     db_df = db_df[required_cols]
 
+                    # 準備上傳至 Google Sheets
                     upload_df = db_df.copy()
                     upload_df = upload_df.fillna("N/A").astype(str)
                     
+                    # 寫入前先清空整張表，確保乾淨
                     sheet.clear()
                     sheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist())
                     
-                    st.sidebar.success("✅ 雲端資料庫更新成功！")
+                    st.sidebar.success("✅ 雲端資料庫已重新整理並更新成功！")
                     st.rerun() 
                     
             except Exception as e:
