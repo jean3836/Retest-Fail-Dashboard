@@ -66,7 +66,6 @@ st.sidebar.download_button(label="下載標準模板 (CSV)", data=get_template()
 st.sidebar.header("📤 第二步：上傳最新數據")
 uploaded_file = st.sidebar.file_uploader("上傳報表", type=["csv", "xlsx"])
 
-# 強制覆蓋模式，徹底解決幽靈舊資料累積問題
 overwrite_mode = st.sidebar.checkbox("⚠️ 完整覆蓋模式 (推薦)", value=True, help="勾選此項將會清除雲端所有舊資料，完全以本次上傳的檔案為準。")
 
 if uploaded_file and db_connected:
@@ -86,7 +85,6 @@ if uploaded_file and db_connected:
                 processed_data = []
                 for sheet_name, df in all_dfs:
                     if len(df.columns) >= 9:
-                        # 嚴格依照表頭判定 Data Type
                         col_c_name = str(df.columns[2]).strip().lower()
                         if "retest" in col_c_name:
                             data_type = "⚠️ Retest (RR)"
@@ -116,7 +114,6 @@ if uploaded_file and db_connected:
                     new_df["Station"] = new_df["Station"].ffill()
                     new_df = new_df.dropna(subset=["Item 名稱"])
                     
-                    # 徹底清除儲存格內的換行符號
                     for col in ["Station", "Item 名稱", "Root Cause", "Corrective Action"]:
                         new_df[col] = new_df[col].astype(str).str.replace(r'\r+|\n+', ' ', regex=True).str.strip()
                     
@@ -175,29 +172,31 @@ if uploaded_file and db_connected:
             except Exception as e:
                 st.sidebar.error(f"資料處理或上傳失敗：{e}")
 
-# --- 🎯 全新功能：互動式資料卡片顯示器 ---
+
+# --- 🎯 互動式資料卡片顯示器 ---
 def display_interactive_dataframe(df, key_prefix):
     """
-    建立可點選的 DataFrame，並在點擊後於下方顯示完整的資料卡片
+    建立可點選的 DataFrame，並在點擊後於下方顯示完整的資料卡片，且包含項次數字
     """
-    # 啟用 st.dataframe 的點選功能 (需要 Streamlit 1.35 以上版本)
     event = st.dataframe(
         df,
         use_container_width=True,
-        on_select="rerun",           # 點擊後重新載入擷取資料
-        selection_mode="single-row", # 限制單行選擇
+        on_select="rerun",
+        selection_mode="single-row",
         key=f"{key_prefix}_table"
     )
     
-    # 如果使用者有點擊表格內的任何一列
     if event.selection.rows:
         selected_idx = event.selection.rows[0]
         row_data = df.iloc[selected_idx]
         
-        st.markdown("---")
-        st.markdown("### 📌 詳細資料卡片")
+        # 🌟 這裡動態抓取表格最左側的「項次」數字
+        item_index = df.index[selected_idx]
         
-        # 使用左右分欄，讓版面更易讀
+        st.markdown("---")
+        # 將項次數字直接標示在標題上！
+        st.markdown(f"### 📌 詳細資料卡片 (項次：{item_index})")
+        
         col1, col2 = st.columns([1, 1.5])
         
         with col1:
@@ -221,6 +220,9 @@ if not db_connected:
 elif db_df.empty:
     st.info("雲端資料庫目前是空的，請從左側上傳您的第一份報表！")
 else:
+    # 🌟 貼心小優化：讓最前面的項次數字從 1 開始 (預設是 0)，這樣對照起來更直覺！
+    db_df.index = range(1, len(db_df) + 1)
+    
     search_query = st.text_input("請輸入想尋找的 Retest item 或 Fail item (例如: UnbindStateSync_3)")
     
     if search_query:
@@ -229,11 +231,9 @@ else:
         
         if not result_df.empty:
             st.success(f"從雲端找到 {len(result_df)} 筆相符的歷史資料 (💡 點擊表格內任意一列即可查看完整內容)：")
-            # 呼叫互動式表格
             display_interactive_dataframe(result_df, "search")
         else:
             st.warning("資料庫中查無符合的資料。")
     
     with st.expander("點擊展開預覽：雲端資料庫中的所有紀錄 (💡 點擊表格內任意一列即可查看完整內容)"):
-        # 呼叫互動式表格
         display_interactive_dataframe(db_df, "full_db")
