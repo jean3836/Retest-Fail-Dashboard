@@ -7,6 +7,21 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="產線數據查找工具", layout="wide")
 
 # ==========================================
+# 🌟 新增：隱藏預設的開發者工具 (僅 Admin 可見)
+# ==========================================
+# 只要目前的角色不是 Admin (包含尚未登入的狀態)，就注入 CSS 隱藏 Header 和 Footer
+if st.session_state.get('role') != "Admin":
+    hide_st_style = """
+        <style>
+        /* 隱藏右上角的 Header (包含三個點 Menu) */
+        header {visibility: hidden;}
+        /* 隱藏底部的 Made with Streamlit 浮水印 */
+        footer {visibility: hidden;}
+        </style>
+    """
+    st.markdown(hide_st_style, unsafe_allow_html=True)
+
+# ==========================================
 # 1. 使用者權限設定 (迷你資料庫)
 # ==========================================
 USER_DB = {
